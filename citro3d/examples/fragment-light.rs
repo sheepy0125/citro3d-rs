@@ -6,7 +6,7 @@ use citro3d::{
     color::Color,
     light::{DistanceAttenuation, LightEnv, Lut, LutId, LutInput, Material, Spotlight},
     math::{AspectRatio, ClipPlanes, FVec3, Matrix4, Projection, StereoDisplacement},
-    render::{self, ClearFlags, RenderTarget},
+    render::{ClearFlags, DepthFormat, Frame, ScreenTarget, Target},
     shader, texenv,
 };
 use citro3d_macros::include_shader;
@@ -260,22 +260,12 @@ fn main() {
 
     let RawFrameBuffer { width, height, .. } = top_left.raw_framebuffer();
     let mut top_left_target = instance
-        .create_screen_target(
-            width,
-            height,
-            top_left,
-            Some(render::DepthFormat::Depth24Stencil8),
-        )
+        .render_target(width, height, top_left, Some(DepthFormat::Depth24Stencil8))
         .expect("failed to create render target");
 
     let RawFrameBuffer { width, height, .. } = top_right.raw_framebuffer();
     let mut top_right_target = instance
-        .create_screen_target(
-            width,
-            height,
-            top_right,
-            Some(render::DepthFormat::Depth24Stencil8),
-        )
+        .render_target(width, height, top_right, Some(DepthFormat::Depth24Stencil8))
         .expect("failed to create render target");
 
     let mut bottom_screen = gfx.bottom_screen.borrow_mut();
@@ -286,7 +276,7 @@ fn main() {
             width,
             height,
             bottom_screen,
-            Some(render::DepthFormat::Depth24Stencil8),
+            Some(DepthFormat::Depth24Stencil8),
         )
         .expect("failed to create bottom screen render target");
 
@@ -294,7 +284,6 @@ fn main() {
     let vertex_shader = shader.get(0).unwrap();
 
     let program = shader::Program::new(vertex_shader).unwrap();
-    instance.bind_program(&program);
 
     let mut vbo_data = Vec::with_capacity_in(VERTICES.len(), ctru::linear::LinearAllocator);
     vbo_data.extend_from_slice(VERTICES);
@@ -344,18 +333,14 @@ fn main() {
             (1.0 / (0.5 * PI * d * d)).min(1.0) // We use a less aggressive attenuation to highlight the spotlight
         })));
 
-    // Bind the lighting environment for use
-    instance.bind_light_env(Some(light_env));
-
     // Setup the rotating view of the cube
     let mut view = Matrix4::identity();
     let model_idx = program.get_uniform("modelView").unwrap();
     view.translate(0.0, 0.0, -2.0);
-    instance.bind_vertex_uniform(model_idx, view);
 
-    let stage0 = texenv::Stage::new(0).unwrap();
-    instance
-        .texenv(stage0)
+    let projection_uniform_idx = program.get_uniform("projection").unwrap();
+
+    let stage0 = texenv::TexEnv::new()
         .src(
             texenv::Mode::BOTH,
             texenv::Source::FragmentPrimaryColor,
@@ -364,8 +349,6 @@ fn main() {
         )
         .func(texenv::Mode::BOTH, texenv::CombineFunc::Add);
 
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
-
     while apt.main_loop() {
         hid.scan_input();
 
@@ -373,49 +356,45 @@ fn main() {
             break;
         }
 
-        (bottom_target, (top_left_target, top_right_target)) = instance
-            .render_to_target(top_left_target, |instance, mut top_left_target| {
-                let render_to =
-                    |instance: &mut RenderInstance, target: &mut RenderTarget<'_>, projection| {
-                        target.clear(ClearFlags::ALL, 0, 0);
+        instance.render_frame_with(|mut frame| {
+            fn cast_lifetime_to_closure<'frame, T>(x: T) -> T
+            where
+                T: Fn(&mut Frame<'frame>, &'frame mut ScreenTarget<'_>, &Matrix4),
+            {
+                x
+            }
 
-                        instance.bind_vertex_uniform(projection_uniform_idx, projection);
-                        instance.bind_vertex_uniform(model_idx, view);
-
-                        instance.set_attr_info(&attr_info);
-
-                        instance.draw_arrays(buffer::Primitive::Triangles, vbo_data);
-                    };
-
-                let Projections {
-                    left_eye,
-                    right_eye,
-                    center,
-                } = calculate_projections();
-
-                // Render top left
-                render_to(instance, &mut top_left_target, &left_eye);
-
-                // Switch to top right and deactivate top left
-                let (top_left_target, mut top_right_target) = instance
-                    .swap_render_target(top_left_target, top_right_target)
+            let render_to = cast_lifetime_to_closure(|frame, target, projection| {
+                target.clear(ClearFlags::ALL, 0, 0);
+                frame
+                    .select_render_target(target)
                     .expect("failed to set render target");
 
-                // Render top right
-                render_to(instance, &mut top_right_target, &right_eye);
+                frame.bind_vertex_uniform(projection_uniform_idx, projection);
+                frame.bind_vertex_uniform(model_idx, view);
 
-                // Switch to bottom and deactivate top right
-                let (top_right_target, mut bottom_target) = instance
-                    .swap_render_target(top_right_target, bottom_target)
-                    .expect("failed to set render target");
+                frame.set_attr_info(&attr_info);
 
-                // Render bottom
-                render_to(instance, &mut bottom_target, &center);
+                frame.draw_arrays(buffer::Primitive::Triangles, vbo_data);
+            });
 
-                // Return active and inactive targets
-                (bottom_target, (top_left_target, top_right_target))
-            })
-            .expect("failed to set render target");
+            frame.bind_program(&program);
+            frame.bind_light_env(Some(light_env.as_mut()));
+
+            frame.set_texenvs(&[stage0]);
+
+            let Projections {
+                left_eye,
+                right_eye,
+                center,
+            } = calculate_projections();
+
+            render_to(&mut frame, &mut top_left_target, &left_eye);
+            render_to(&mut frame, &mut top_right_target, &right_eye);
+            render_to(&mut frame, &mut bottom_target, &center);
+
+            frame
+        });
 
         // Rotate the modelView
         view.translate(0.0, 0.0, 2.0);

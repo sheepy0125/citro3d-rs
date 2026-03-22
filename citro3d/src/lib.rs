@@ -29,20 +29,14 @@ pub mod texenv;
 pub mod texture;
 pub mod uniform;
 
-use std::cell::{OnceCell, RefMut};
+use std::cell::RefMut;
 use std::fmt;
-use std::pin::Pin;
 use std::rc::Rc;
 
 use ctru::services::gfx::Screen;
 pub use error::{Error, Result};
 
-use self::buffer::{Index, Indices};
-use self::light::LightEnv;
-use self::texenv::TexEnv;
-use self::uniform::Uniform;
-use crate::private::Sealed;
-use crate::render::{RenderTarget, ScreenTarget};
+use crate::render::Frame;
 
 pub mod macros {
     //! Helper macros for working with shaders.
@@ -55,31 +49,25 @@ mod private {
     impl Sealed for u16 {}
 }
 
+/// Representation of `citro3d`'s internal render queue. This is something that
+/// lives in the global context, but it keeps references to resources that are
+/// used for rendering, so it's useful for us to have something to represent its
+/// lifetime.
+struct RenderQueue;
+
 /// The single instance for using `citro3d`. This is the base type that an application
 /// should instantiate to use this library.
-///
-/// The counterpart available during rendering is [`RenderInstance`].
-///
-/// This struct has a reference to the render queue. (see next section)
-///
-/// # The render queue and deinitialization
-///
-/// Dropping the instance will not immediately deinitialize Citro3D.
-///
-/// It, and the internal render queue, are deinitialized when all references to the
-/// render queue have been dropped.
-///
-/// The types that hold a reference to the render queue are:
-/// - [`Instance`]
-/// - [`RenderInstance`]
-/// - [`ScreenTarget`]
-/// - [`RenderTarget`]
-///
-/// This means that, to deinitialize Citro3D, you should drop your targets as well
-/// as the instance.
+#[non_exhaustive]
 #[must_use]
-#[derive(Debug)]
-pub struct Instance(RenderInstance);
+pub struct Instance {
+    queue: Rc<RenderQueue>,
+}
+
+impl fmt::Debug for Instance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Instance").finish_non_exhaustive()
+    }
+}
 
 impl Instance {
     /// Initialize the default `citro3d` instance.
@@ -98,25 +86,13 @@ impl Instance {
     /// Fails if `citro3d` cannot be initialized.
     #[doc(alias = "C3D_Init")]
     pub fn with_cmdbuf_size(size: usize) -> Result<Self> {
-        Ok(Instance(unsafe { RenderInstance::with_cmdbuf_size(size) }?))
-    }
-
-    /// Get the inner [`RenderInstance`].
-    /// You usually want to call [`render_to_target`](Self::render_to_target) instead.
-    pub unsafe fn into_inner(self) -> RenderInstance {
-        self.0
-    }
-
-    /// Get a mutable reference to the inner [`RenderInstance`].
-    /// You usually want to call [`render_to_target`](Self::render_to_target) instead.
-    pub unsafe fn get_inner_mut(&mut self) -> &mut RenderInstance {
-        &mut self.0
-    }
-
-    /// Get an immutable reference to the inner [`RenderInstance`].
-    /// You usually want to call [`render_to_target`](Self::render_to_target) instead.
-    pub unsafe fn get_inner_ref(&self) -> &RenderInstance {
-        &self.0
+        if unsafe { citro3d_sys::C3D_Init(size) } {
+            Ok(Self {
+                queue: Rc::new(RenderQueue),
+            })
+        } else {
+            Err(Error::FailedToInitialize)
+        }
     }
 
     /// Create a new render target with the specified size, color format,
@@ -133,412 +109,39 @@ impl Instance {
         height: usize,
         screen: RefMut<'screen, dyn Screen>,
         depth_format: Option<render::DepthFormat>,
-    ) -> Result<ScreenTarget<'screen>> {
-        ScreenTarget::new(
-            width,
-            height,
-            screen,
-            depth_format,
-            Rc::clone(&self.0.queue),
-        )
+    ) -> Result<render::ScreenTarget<'screen>> {
+        render::ScreenTarget::new(width, height, screen, depth_format, Rc::clone(&self.queue))
     }
 
-    pub unsafe fn create_screen_target_from_raw<'screen>(
+    /// Create a new render target that renders to a texture with the specified size, color format,
+    /// and depth format.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the target could not be created with the given parameters.
+    pub fn render_target_texture(
         &self,
-        raw: *mut citro3d_sys::C3D_RenderTarget_tag,
-        screen: RefMut<'screen, dyn Screen>,
-    ) -> Result<ScreenTarget<'screen>> {
-        unsafe { ScreenTarget::from_raw(raw, screen, Rc::clone(&self.0.queue)) }
+        texture: texture::Texture,
+        face: texture::Face,
+        depth_format: Option<render::DepthFormat>,
+    ) -> Result<render::TextureTarget> {
+        render::TextureTarget::new(texture, face, depth_format, Rc::clone(&self.queue))
     }
 
     /// Render a frame.
     ///
-    /// The passed in function/closure will receive a [`RenderInstance`]
-    /// and [`RenderTarget`] to grant the ability to render things.
-    /// It must also return the RenderTarget afterwards.
+    /// The passed in function/closure can access a [`Frame`] to emit draw calls.
     #[doc(alias = "C3D_FrameBegin")]
     #[doc(alias = "C3D_FrameDrawOn")]
     #[doc(alias = "C3D_FrameEnd")]
-    pub fn render_to_target<'screen, 'screen2, F, T>(
-        &mut self,
-        screen_target: ScreenTarget<'screen>,
-        f: F,
-    ) -> Result<(ScreenTarget<'screen2>, T)>
-    where
-        F: FnOnce(&mut RenderInstance, RenderTarget<'screen>) -> (RenderTarget<'screen2>, T),
-    {
-        let render_target = unsafe {
-            citro3d_sys::C3D_FrameBegin(
-                // TODO: begin + end flags should be configurable
-                citro3d_sys::C3D_FRAME_SYNCDRAW,
-            );
-            self.0.set_render_target(&screen_target)?;
-            screen_target.into_inner()
-        };
-
-        let (render_target, returns) = f(&mut self.0, render_target);
-
-        unsafe {
-            citro3d_sys::C3D_FrameEnd(0);
-        }
-
-        Ok((render_target.into(), returns))
-    }
-}
-
-/// An [`Instance`] in a rendering state.
-/// Is able to perform operations related to rendering.
-///
-/// This struct has a reference to the [render queue](Instance#the-render-queue-and-deinitialization).
-#[non_exhaustive]
-pub struct RenderInstance {
-    texenvs: [OnceCell<TexEnv>; texenv::TEXENV_COUNT],
-    queue: Rc<RenderQueue>,
-    light_env: Option<Pin<Box<LightEnv>>>,
-}
-
-impl fmt::Debug for RenderInstance {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RenderInstance").finish_non_exhaustive()
-    }
-}
-
-/// Representation of `citro3d`'s internal render queue. This is something that
-/// lives in the global context, but it keeps references to resources that are
-/// used for rendering, so it's useful for us to have something to represent its
-/// lifetime.
-struct RenderQueue;
-
-impl RenderInstance {
-    /// Creates a new RenderInstance unsafely.
-    ///
-    /// This function is essentially useless outside of this crate,
-    /// even in an unsafe context, because using the RenderInstance
-    /// effectively requires creating a target using the relevant
-    /// functions on [`Instance`]. This is why it's `pub(crate)`.
-    ///
-    /// To get a RenderInstance unsafely, you'd want to use
-    /// [`Instance::into_inner`] or [`Instance::get_inner_mut`]
-    #[doc(alias = "C3D_Init")]
-    pub(crate) unsafe fn with_cmdbuf_size(size: usize) -> Result<Self> {
-        if unsafe { citro3d_sys::C3D_Init(size) } {
-            Ok(Self {
-                texenvs: Default::default(),
-                queue: Rc::new(RenderQueue),
-                light_env: None,
-            })
-        } else {
-            Err(Error::FailedToInitialize)
-        }
-    }
-
-    /// Change the render target for drawing the frame.
-    /// This will activate the `new_target` (turning it into a [`RenderTarget`])
-    /// and deactivate the `old_target` (turning it into a [`ScreenTarget`]).
-    ///
-    /// # Errors
-    ///
-    /// Fails if the `new_target` cannot be used for drawing.
-    #[doc(alias = "C3D_FrameDrawOn")]
-    pub fn swap_render_target<'screen, 'screen2>(
-        &mut self,
-        old_target: RenderTarget<'screen>,
-        new_target: ScreenTarget<'screen2>,
-    ) -> std::result::Result<
-        (ScreenTarget<'screen>, RenderTarget<'screen2>),
-        (RenderTarget<'screen>, ScreenTarget<'screen2>, Error),
-    > {
-        match unsafe { self.set_render_target(&new_target) } {
-            Ok(()) => Ok((old_target.into(), unsafe { new_target.into_inner() })),
-            Err(e) => Err((old_target, new_target, e)),
-        }
-    }
-
-    /// Sets the active render target.
-    ///
-    /// This function is unsafe because it doesn't deactivate the previous render target.
-    /// You probably want to use [`swap_render_target`](Self::swap_render_target) instead.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the `target` cannot be used for drawing.
-    #[doc(alias = "C3D_FrameDrawOn")]
-    pub unsafe fn set_render_target(&mut self, target: &ScreenTarget<'_>) -> Result<()> {
-        if unsafe { citro3d_sys::C3D_FrameDrawOn(target.get_inner_ref().as_raw()) } {
-            Ok(())
-        } else {
-            Err(Error::InvalidRenderTarget)
-        }
-    }
-
-    /// Render primitives from the current vertex array buffer.
-    #[doc(alias = "C3D_DrawArrays")]
-    pub fn draw_arrays(&mut self, primitive: buffer::Primitive, vbo_data: buffer::Slice) {
-        self.set_buffer_info(vbo_data.info());
-
-        // TODO: should we also require the attrib info directly here?
-        unsafe {
-            citro3d_sys::C3D_DrawArrays(
-                primitive as ctru_sys::GPU_Primitive_t,
-                vbo_data.index(),
-                vbo_data.len(),
-            );
-        }
-    }
-
-    /// Indexed drawing
-    ///
-    /// Draws the vertices in `buf` indexed by `indices`. `indices` must be linearly allocated
-    ///
-    /// # Safety
-    // TODO: #41 might be able to solve this:
-    /// If `indices` goes out of scope before the current frame ends it will cause a
-    /// use-after-free (possibly by the GPU).
-    ///
-    /// # Panics
-    ///
-    /// If the given index buffer is too long to have its length converted to `i32`.
-    #[doc(alias = "C3D_DrawElements")]
-    pub unsafe fn draw_elements<I: Index>(
-        &mut self,
-        primitive: buffer::Primitive,
-        vbo_data: buffer::Slice,
-        indices: &Indices<'_, I>,
+    pub fn render_frame_with<'istance: 'frame, 'frame>(
+        &'istance mut self,
+        f: impl FnOnce(Frame<'frame>) -> Frame<'frame>,
     ) {
-        self.set_buffer_info(vbo_data.info());
+        let frame = f(Frame::new(self));
 
-        let indices = &indices.buffer;
-        let elements = indices.as_ptr().cast();
-
-        unsafe {
-            citro3d_sys::C3D_DrawElements(
-                primitive as ctru_sys::GPU_Primitive_t,
-                indices.len().try_into().unwrap(),
-                // flag bit for short or byte
-                I::TYPE,
-                elements,
-            );
-        }
-    }
-}
-
-impl Drop for RenderQueue {
-    #[doc(alias = "C3D_Fini")]
-    fn drop(&mut self) {
-        unsafe {
-            citro3d_sys::C3D_Fini();
-        }
-    }
-}
-
-pub trait InstanceCommon: Sealed {
-    /// Get the buffer info being used, if it exists. Note that the resulting
-    /// [`buffer::Info`] is copied from the one currently in use.
-    #[doc(alias = "C3D_GetBufInfo")]
-    fn get_buffer_info(&self) -> Option<buffer::Info>;
-
-    /// Set the buffer info to use for any following draw calls.
-    #[doc(alias = "C3D_SetBufInfo")]
-    fn set_buffer_info(&mut self, buffer_info: &buffer::Info);
-
-    /// Get the attribute info being used, if it exists. Note that the resulting
-    /// [`attrib::Info`] is copied from the one currently in use.
-    #[doc(alias = "C3D_GetAttrInfo")]
-    fn get_attr_info(&self) -> Option<attrib::Info>;
-
-    /// Set the attribute info to use for any following draw calls.
-    #[doc(alias = "C3D_SetAttrInfo")]
-    fn set_attr_info(&mut self, attr_info: &attrib::Info);
-
-    /// Use the given [`shader::Program`] for subsequent draw calls.
-    #[doc(alias = "C3D_BindProgram")]
-    fn bind_program(&mut self, program: &shader::Program);
-
-    /// Binds a new [`LightEnv`], returning the previous one (if present).
-    #[doc(alias = "C3D_LightEnvBind")]
-    fn bind_light_env(&mut self, new_env: Option<Pin<Box<LightEnv>>>)
-    -> Option<Pin<Box<LightEnv>>>;
-
-    /// Returns an immutable reference to the [`LightEnv`].
-    fn light_env(&self) -> Option<Pin<&LightEnv>>;
-
-    /// Returns a mutable reference to the [`LightEnv`].
-    fn light_env_mut(&mut self) -> Option<Pin<&mut LightEnv>>;
-
-    /// Bind a uniform to the given `index` in the vertex shader for the next draw call.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # let _runner = test_runner::GdbRunner::default();
-    /// # use citro3d::uniform;
-    /// # use citro3d::math::Matrix4;
-    /// #
-    /// # let mut instance = citro3d::Instance::new().unwrap();
-    /// let idx = uniform::Index::from(0);
-    /// let mtx = Matrix4::identity();
-    /// instance.bind_vertex_uniform(idx, &mtx);
-    /// ```
-    fn bind_vertex_uniform(&mut self, index: uniform::Index, uniform: impl Into<Uniform>);
-
-    /// Bind a uniform to the given `index` in the geometry shader for the next draw call.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # let _runner = test_runner::GdbRunner::default();
-    /// # use citro3d::uniform;
-    /// # use citro3d::math::Matrix4;
-    /// #
-    /// # let mut instance = citro3d::Instance::new().unwrap();
-    /// let idx = uniform::Index::from(0);
-    /// let mtx = Matrix4::identity();
-    /// instance.bind_geometry_uniform(idx, &mtx);
-    /// ```
-    fn bind_geometry_uniform(&mut self, index: uniform::Index, uniform: impl Into<Uniform>);
-
-    /// Retrieve the [`TexEnv`] for the given stage, initializing it first if necessary.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use citro3d::texenv;
-    /// # let _runner = test_runner::GdbRunner::default();
-    /// # let mut instance = citro3d::Instance::new().unwrap();
-    /// let stage0 = texenv::Stage::new(0).unwrap();
-    /// let texenv0 = instance.texenv(stage0);
-    /// ```
-    #[doc(alias = "C3D_GetTexEnv")]
-    #[doc(alias = "C3D_TexEnvInit")]
-    fn texenv(&mut self, stage: texenv::Stage) -> &mut texenv::TexEnv;
-}
-
-impl Sealed for Instance {}
-// This is essentially just a passthrough for methods that
-// can safely be called both inside and outside of rendering.
-impl InstanceCommon for Instance {
-    fn get_buffer_info(&self) -> Option<buffer::Info> {
-        self.0.get_buffer_info()
-    }
-
-    fn set_buffer_info(&mut self, buffer_info: &buffer::Info) {
-        self.0.set_buffer_info(buffer_info);
-    }
-
-    fn get_attr_info(&self) -> Option<attrib::Info> {
-        self.0.get_attr_info()
-    }
-
-    fn set_attr_info(&mut self, attr_info: &attrib::Info) {
-        self.0.set_attr_info(attr_info);
-    }
-
-    fn bind_program(&mut self, program: &shader::Program) {
-        self.0.bind_program(program);
-    }
-
-    fn bind_light_env(
-        &mut self,
-        new_env: Option<Pin<Box<LightEnv>>>,
-    ) -> Option<Pin<Box<LightEnv>>> {
-        self.0.bind_light_env(new_env)
-    }
-
-    fn light_env(&self) -> Option<Pin<&LightEnv>> {
-        self.0.light_env()
-    }
-
-    fn light_env_mut(&mut self) -> Option<Pin<&mut LightEnv>> {
-        self.0.light_env_mut()
-    }
-
-    fn bind_vertex_uniform(&mut self, index: uniform::Index, uniform: impl Into<Uniform>) {
-        self.0.bind_vertex_uniform(index, uniform);
-    }
-
-    fn bind_geometry_uniform(&mut self, index: uniform::Index, uniform: impl Into<Uniform>) {
-        self.0.bind_geometry_uniform(index, uniform);
-    }
-
-    fn texenv(&mut self, stage: texenv::Stage) -> &mut texenv::TexEnv {
-        self.0.texenv(stage)
-    }
-}
-
-impl Sealed for RenderInstance {}
-impl InstanceCommon for RenderInstance {
-    fn get_buffer_info(&self) -> Option<buffer::Info> {
-        let raw = unsafe { citro3d_sys::C3D_GetBufInfo() };
-        buffer::Info::copy_from(raw)
-    }
-
-    fn set_buffer_info(&mut self, buffer_info: &buffer::Info) {
-        let raw: *const _ = &buffer_info.0;
-        // SAFETY: C3D_SetBufInfo actually copies the pointee instead of mutating it.
-        unsafe { citro3d_sys::C3D_SetBufInfo(raw.cast_mut()) };
-    }
-
-    fn get_attr_info(&self) -> Option<attrib::Info> {
-        let raw = unsafe { citro3d_sys::C3D_GetAttrInfo() };
-        attrib::Info::copy_from(raw)
-    }
-
-    fn set_attr_info(&mut self, attr_info: &attrib::Info) {
-        let raw: *const _ = &attr_info.0;
-        // SAFETY: C3D_SetAttrInfo actually copies the pointee instead of mutating it.
-        unsafe { citro3d_sys::C3D_SetAttrInfo(raw.cast_mut()) };
-    }
-
-    fn bind_program(&mut self, program: &shader::Program) {
-        // SAFETY: AFAICT C3D_BindProgram just copies pointers from the given program,
-        // instead of mutating the pointee in any way that would cause UB
-        unsafe {
-            citro3d_sys::C3D_BindProgram(program.as_raw().cast_mut());
-        }
-    }
-
-    fn bind_light_env(
-        &mut self,
-        new_env: Option<Pin<Box<LightEnv>>>,
-    ) -> Option<Pin<Box<LightEnv>>> {
-        let old_env = self.light_env.take();
-        self.light_env = new_env;
-
-        unsafe {
-            // setup the light env slot, since this is a pointer copy it will stick around even with we swap
-            // out light_env later
-            citro3d_sys::C3D_LightEnvBind(
-                self.light_env
-                    .as_mut()
-                    .map_or(std::ptr::null_mut(), |env| env.as_mut().as_raw_mut()),
-            );
-        }
-
-        old_env
-    }
-
-    fn light_env(&self) -> Option<Pin<&LightEnv>> {
-        self.light_env.as_ref().map(|env| env.as_ref())
-    }
-
-    fn light_env_mut(&mut self) -> Option<Pin<&mut LightEnv>> {
-        self.light_env.as_mut().map(|env| env.as_mut())
-    }
-
-    fn bind_vertex_uniform(&mut self, index: uniform::Index, uniform: impl Into<Uniform>) {
-        uniform.into().bind(self, shader::Type::Vertex, index);
-    }
-
-    fn bind_geometry_uniform(&mut self, index: uniform::Index, uniform: impl Into<Uniform>) {
-        uniform.into().bind(self, shader::Type::Geometry, index);
-    }
-
-    fn texenv(&mut self, stage: texenv::Stage) -> &mut texenv::TexEnv {
-        let texenv = &mut self.texenvs[stage.0];
-        texenv.get_or_init(|| TexEnv::new(stage));
-        // We have to do this weird unwrap to get a mutable reference,
-        // since there is no `get_mut_or_init` or equivalent
-        texenv.get_mut().unwrap()
+        // Explicit drop for FrameEnd (when the GPU command buffer is flushed).
+        drop(frame);
     }
 }
 
@@ -562,14 +165,11 @@ mod tests {
             .create_screen_target(10, 10, bottom_screen, None)
             .unwrap();
 
-        (bottom_target, top_target) = instance
-            .render_to_target(top_target, |instance, top_target| {
-                let (top_screen_target, bottom_target) = instance
-                    .swap_render_target(top_target, bottom_target)
-                    .unwrap();
-                (bottom_target, top_screen_target)
-            })
-            .unwrap();
+        instance.render_frame_with(|mut frame| {
+            frame.select_render_target(&target).unwrap();
+
+            frame
+        });
 
         // Check that we don't get a double-free or use-after-free by dropping
         // the global instance before dropping the targets.

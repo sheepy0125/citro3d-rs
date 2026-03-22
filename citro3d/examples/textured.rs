@@ -1,13 +1,10 @@
-//! This example demonstrates drawing a coloured cube using indexed rendering.
-
 #![feature(allocator_api)]
 
 use citro3d::macros::include_shader;
-use citro3d::math::{
-    AspectRatio, ClipPlanes, CoordinateOrientation, FVec3, Matrix4, Projection, StereoDisplacement,
-};
+use citro3d::math::{AspectRatio, ClipPlanes, Matrix4, Projection, StereoDisplacement};
 use citro3d::render::{ClearFlags, Frame, ScreenTarget, Target};
-use citro3d::{attrib, buffer, shader, texenv};
+use citro3d::{attrib, buffer, shader};
+use citro3d::{texenv, texture};
 use ctru::prelude::*;
 use ctru::services::gfx::{RawFrameBuffer, Screen, TopScreen3D};
 
@@ -27,46 +24,53 @@ impl Vec3 {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-struct Vertex {
-    pos: Vec3,
-    color: Vec3,
+struct Vec2 {
+    x: f32,
+    y: f32,
 }
 
-// borrowed from https://bevyengine.org/examples/3D%20Rendering/generate-custom-mesh/
-const VERTS: &[[f32; 3]] = &[
-    // top (facing towards +y)
-    [-0.5, 0.5, -0.5], // vertex with index 0
-    [0.5, 0.5, -0.5],  // vertex with index 1
-    [0.5, 0.5, 0.5],   // etc. until 23
-    [-0.5, 0.5, 0.5],
-    // bottom   (-y)
-    [-0.5, -0.5, -0.5],
-    [0.5, -0.5, -0.5],
-    [0.5, -0.5, 0.5],
-    [-0.5, -0.5, 0.5],
-    // right    (+x)
-    [0.5, -0.5, -0.5],
-    [0.5, -0.5, 0.5],
-    [0.5, 0.5, 0.5], // This vertex is at the same position as vertex with index 2, but they'll have different UV and normal
-    [0.5, 0.5, -0.5],
-    // left     (-x)
-    [-0.5, -0.5, -0.5],
-    [-0.5, -0.5, 0.5],
-    [-0.5, 0.5, 0.5],
-    [-0.5, 0.5, -0.5],
-    // back     (+z)
-    [-0.5, -0.5, 0.5],
-    [-0.5, 0.5, 0.5],
-    [0.5, 0.5, 0.5],
-    [0.5, -0.5, 0.5],
-    // forward  (-z)
-    [-0.5, -0.5, -0.5],
-    [-0.5, 0.5, -0.5],
-    [0.5, 0.5, -0.5],
-    [0.5, -0.5, -0.5],
+impl Vec2 {
+    const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Vertex {
+    pos: Vec3,
+    tex_coord: Vec2,
+}
+
+static VERTICES: &[Vertex] = &[
+    Vertex {
+        pos: Vec3::new(-0.5, 0.5, -3.0),
+        tex_coord: Vec2::new(0.0, 1.0),
+    },
+    Vertex {
+        pos: Vec3::new(-0.5, -0.5, -3.0),
+        tex_coord: Vec2::new(0.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(0.5, -0.5, -3.0),
+        tex_coord: Vec2::new(1.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(-0.5, 0.5, -3.0),
+        tex_coord: Vec2::new(0.0, 1.0),
+    },
+    Vertex {
+        pos: Vec3::new(0.5, -0.5, -3.0),
+        tex_coord: Vec2::new(1.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(0.5, 0.5, -3.0),
+        tex_coord: Vec2::new(1.0, 1.0),
+    },
 ];
 
-static SHADER_BYTES: &[u8] = include_shader!("assets/vshader.pica");
+static SHADER_BYTES: &[u8] = include_shader!("assets/vshader_textured.pica");
+static TEXTURE_BYTES: &[u8] = include_bytes!("assets/kitten.t3d");
 const CLEAR_COLOR: u32 = 0x68_B0_D8_FF;
 
 fn main() {
@@ -85,66 +89,37 @@ fn main() {
 
     let RawFrameBuffer { width, height, .. } = top_left.raw_framebuffer();
     let mut top_left_target = instance
-        .create_screen_target(width, height, top_left, None)
+        .render_target(width, height, top_left, None)
         .expect("failed to create render target");
 
     let RawFrameBuffer { width, height, .. } = top_right.raw_framebuffer();
     let mut top_right_target = instance
-        .create_screen_target(width, height, top_right, None)
+        .render_target(width, height, top_right, None)
         .expect("failed to create render target");
 
     let mut bottom_screen = gfx.bottom_screen.borrow_mut();
     let RawFrameBuffer { width, height, .. } = bottom_screen.raw_framebuffer();
 
     let mut bottom_target = instance
-        .create_screen_target(width, height, bottom_screen, None)
+        .render_target(width, height, bottom_screen, None)
         .expect("failed to create bottom screen render target");
 
     let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
     let vertex_shader = shader.get(0).unwrap();
 
     let program = shader::Program::new(vertex_shader).unwrap();
+    let projection_uniform_idx = program.get_uniform("projection").unwrap();
 
-    let mut vbo_data = Vec::with_capacity_in(VERTS.len(), ctru::linear::LinearAllocator);
-    for vert in VERTS.iter().enumerate().map(|(i, v)| Vertex {
-        pos: Vec3 {
-            x: v[0],
-            y: v[1],
-            z: v[2],
-        },
-        color: {
-            // Give each vertex a slightly different color just to highlight edges/corners
-            let value = i as f32 / VERTS.len() as f32;
-            Vec3::new(1.0, 0.7 * value, 0.5)
-        },
-    }) {
-        vbo_data.push(vert);
-    }
-
-    let attr_info = build_attrib_info();
+    let mut vbo_data = Vec::with_capacity_in(VERTICES.len(), ctru::linear::LinearAllocator);
+    vbo_data.extend_from_slice(VERTICES);
 
     let mut buf_info = buffer::Info::new();
-    let vbo_slice = buf_info.add(&vbo_data, &attr_info).unwrap();
+    let (attr_info, vbo_data) = prepare_vbos(&mut buf_info, &vbo_data);
 
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
-    let camera_transform = Matrix4::looking_at(
-        FVec3::new(1.8, 1.8, 1.8),
-        FVec3::new(0.0, 0.0, 0.0),
-        FVec3::new(0.0, 1.0, 0.0),
-        CoordinateOrientation::RightHanded,
-    );
-    let indices: &[u8] = &[
-        0, 3, 1, 1, 3, 2, // triangles making up the top (+y) facing side.
-        4, 5, 7, 5, 6, 7, // bottom (-y)
-        8, 11, 9, 9, 11, 10, // right (+x)
-        12, 13, 15, 13, 14, 15, // left (-x)
-        16, 19, 17, 17, 19, 18, // back (+z)
-        20, 21, 23, 21, 22, 23, // forward (-z)
-    ];
-    let index_buffer = vbo_slice.index_buffer(indices).unwrap();
+    let tex = create_texture();
 
     let stage0 = texenv::TexEnv::new()
-        .src(texenv::Mode::BOTH, texenv::Source::PrimaryColor, None, None)
+        .src(texenv::Mode::BOTH, texenv::Source::Texture0, None, None)
         .func(texenv::Mode::BOTH, texenv::CombineFunc::Replace);
 
     while apt.main_loop() {
@@ -168,20 +143,22 @@ fn main() {
                 frame
                     .select_render_target(target)
                     .expect("failed to set render target");
-
-                frame.bind_vertex_uniform(projection_uniform_idx, projection * camera_transform);
-
                 frame.set_attr_info(&attr_info);
+                frame.bind_vertex_uniform(projection_uniform_idx, projection);
+                frame.set_texenvs(&[stage0]);
 
-                frame.draw_elements(buffer::Primitive::Triangles, vbo_slice, &index_buffer);
+                // Binding of the kitten texture
+                frame.bind_texture(texture::Index::Texture0, &tex);
+                frame.draw_arrays(buffer::Primitive::Triangles, vbo_data);
             });
 
             frame.bind_program(&program);
 
-            frame.set_texenvs(&[stage0]);
-
-                // Render bottom
-                render_to(instance, &mut bottom_target, &center);
+            let Projections {
+                left_eye,
+                right_eye,
+                center,
+            } = calculate_projections();
 
             render_to(&mut frame, &mut top_left_target, &left_eye);
             render_to(&mut frame, &mut top_right_target, &right_eye);
@@ -192,8 +169,10 @@ fn main() {
     }
 }
 
-fn build_attrib_info() -> attrib::Info {
-    // Configure attributes for use with the vertex shader
+fn prepare_vbos<'a>(
+    buf_info: &'a mut buffer::Info,
+    vbo_data: &'a [Vertex],
+) -> (attrib::Info, buffer::Slice<'a>) {
     let mut attr_info = attrib::Info::new();
 
     let reg0 = attrib::Register::new(0).unwrap();
@@ -204,10 +183,12 @@ fn build_attrib_info() -> attrib::Info {
         .unwrap();
 
     attr_info
-        .add_loader(reg1, attrib::Format::Float, 3)
+        .add_loader(reg1, attrib::Format::Float, 2)
         .unwrap();
 
-    attr_info
+    let buf_idx = buf_info.add(vbo_data, &attr_info).unwrap();
+
+    (attr_info, buf_idx)
 }
 
 struct Projections {
@@ -216,9 +197,24 @@ struct Projections {
     center: Matrix4,
 }
 
+fn create_texture() -> texture::Texture {
+    let tex: texture::Tex3DSTexture = texture::Tex3DSTexture::new(TEXTURE_BYTES, false).unwrap();
+    let mut tex: texture::Texture = tex.into_texture();
+    tex.set_filter(texture::Filter::Linear, texture::Filter::Linear);
+    tex
+
+    // Example of loading a texture manually, if you had a slice containing the already-swizzled
+    // Rgba8 bytes of the texture in `TEXTURE_BYTES`:
+    //
+    // let params = texture::TextureParameters::new_2d(64, 64, texture::ColorFormat::Rgba8);
+    // let mut tex = texture::Texture::new(params).unwrap();
+    // tex.load_image(TEXTURE_BYTES, texture::Face::default())
+    //     .unwrap();
+    // tex.set_filter(texture::Filter::Linear, texture::Filter::Nearest);
+    // tex
+}
+
 fn calculate_projections() -> Projections {
-    // TODO: it would be cool to allow playing around with these parameters on
-    // the fly with D-pad, etc.
     let slider_val = ctru::os::current_3d_slider_state();
     let interocular_distance = slider_val / 2.0;
 
