@@ -334,7 +334,7 @@ impl Texture {
         unsafe { self.tex.__bindgen_anon_3.__bindgen_anon_1.minLevel }
     }
 
-    fn as_raw(&self) -> *mut citro3d_sys::C3D_Tex {
+    pub fn as_raw(&self) -> *mut citro3d_sys::C3D_Tex {
         &self.tex as *const _ as *mut _
     }
 }

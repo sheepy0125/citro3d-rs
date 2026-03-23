@@ -33,6 +33,7 @@ use std::cell::RefMut;
 use std::fmt;
 use std::rc::Rc;
 
+use citro3d_sys::C3D_RenderTarget;
 use ctru::services::gfx::Screen;
 pub use error::{Error, Result};
 
@@ -111,6 +112,19 @@ impl Instance {
         depth_format: Option<render::DepthFormat>,
     ) -> Result<render::ScreenTarget<'screen>> {
         render::ScreenTarget::new(width, height, screen, depth_format, Rc::clone(&self.queue))
+    }
+
+    /// Create a screen target from a raw [`C3D_RenderTarget`] pointer.
+    ///
+    /// # Safety
+    ///
+    /// The validity of the target is not ensured.
+    pub unsafe fn create_screen_target_from_raw<'screen>(
+        &self,
+        raw: *mut C3D_RenderTarget,
+        screen: RefMut<'screen, dyn Screen>,
+    ) -> Result<render::ScreenTarget<'screen>> {
+        unsafe { render::ScreenTarget::from_raw(raw, screen, Rc::clone(&self.queue)) }
     }
 
     /// Create a new render target that renders to a texture with the specified size, color format,

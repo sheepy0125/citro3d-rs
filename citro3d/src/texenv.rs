@@ -3,6 +3,8 @@
 
 use bitflags::bitflags;
 
+#[cfg(doc)]
+use crate::Frame;
 use crate::texture;
 
 // https://oreo639.github.io/citro3d/texenv_8h.html#a9eda91f8e7252c91f873b1d43e3728b6

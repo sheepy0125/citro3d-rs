@@ -1,3 +1,5 @@
+//! Citro2D font management.
+
 use std::{
     ffi::CString,
     io,
@@ -59,7 +61,7 @@ impl Font {
     /// Dropping an instance of the shared system font won't free it.
     ///
     /// This function is equivalent to [`Font::default`].
-    pub fn get_shared() -> Self {
+    pub const fn get_shared() -> Self {
         Font(null_mut())
     }
 

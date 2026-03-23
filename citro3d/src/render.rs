@@ -5,7 +5,6 @@ use std::cell::RefMut;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::{cell::RefMut, fmt};
 
 use citro3d_sys::{C3D_DEPTHTYPE, C3D_RenderTargetCreate, C3D_RenderTargetDelete};
 use ctru::services::gfx::Screen;
@@ -204,6 +203,22 @@ impl<'screen> ScreenTarget<'screen> {
             _queue: queue,
         })
     }
+
+    pub(crate) unsafe fn from_raw(
+        raw: *mut citro3d_sys::C3D_RenderTarget,
+        screen: RefMut<'screen, dyn Screen>,
+        queue: Rc<RenderQueue>,
+    ) -> Result<Self> {
+        if raw.is_null() {
+            return Err(Error::FailedToInitialize);
+        }
+
+        Ok(Self {
+            raw,
+            _screen: screen,
+            _queue: queue,
+        })
+    }
 }
 
 impl<'screen> Target for ScreenTarget<'screen> {
@@ -215,6 +230,7 @@ impl<'screen> Target for ScreenTarget<'screen> {
 impl Drop for ScreenTarget<'_> {
     #[doc(alias = "C3D_RenderTargetDelete")]
     fn drop(&mut self) {
+        println!("dropping target");
         unsafe {
             C3D_RenderTargetDelete(self.raw);
         }
@@ -558,7 +574,7 @@ impl Drop for Frame<'_> {
             );
             citro3d_sys::C3D_BlendingColor(0);
             citro3d_sys::C3D_EarlyDepthTest(false, ctru_sys::GPU_EARLYDEPTH_GREATER, 0);
-            citro3d_sys::C3D_DepthTest(true, ctru_sys::GPU_GREATER, ctru_sys::GPU_WRITE_ALL);
+            // citro3d_sys::C3D_DepthTest(true, ctru_sys::GPU_GREATER, ctru_sys::GPU_WRITE_ALL);
             citro3d_sys::C3D_AlphaTest(false, ctru_sys::GPU_ALWAYS, 0x00);
             citro3d_sys::C3D_AlphaBlend(
                 ctru_sys::GPU_BLEND_ADD,
@@ -611,8 +627,8 @@ impl Drop for Frame<'_> {
             //
             // TODO: Drawing nothing actually hangs the GPU, so this code is never really helpful (also, not used since the flag makes it a non-issue).
             //       Is it worth keeping? Could hanging be considered better than an ARM exception?
-            let empty_info = attrib::Info::default();
-            self.set_attr_info(&empty_info);
+            // let empty_info = attrib::Info::default();
+            // self.set_attr_info(&empty_info);
 
             // ctx->fixedAttribDirty = 0;
             // ctx->fixedAttribEverDirty = 0;

@@ -17,17 +17,23 @@
 //! ## Feature flags
 #![doc = document_features::document_features!()]
 
-pub mod drawable;
 pub mod error;
 pub mod font;
+pub mod image;
+pub mod immediate;
 pub mod render;
+pub mod sprite;
 pub mod text;
+pub mod types;
+
 use std::cell::RefMut;
 
-use citro2d_sys::C2D_DEFAULT_MAX_OBJECTS;
-use citro3d::render::{RenderTarget, ScreenTarget};
+use citro2d_sys::{C2D_CreateScreenTarget, C2D_DEFAULT_MAX_OBJECTS, C2D_Init, C2D_Prepare};
+use citro3d::render::ScreenTarget;
+use citro3d_sys::{C3D_GetCmdBufUsage, C3D_GetDrawingTime, C3D_GetProcessingTime};
 use ctru::services::gfx::Screen;
-pub use error::{Error, Result};
+use error::{Error, Result};
+pub use types::*;
 
 /// The single instance for using `citro2d`. This is the base type that an application
 /// should instantiate to use this library.
@@ -42,24 +48,16 @@ impl Instance {
     /// This also initializes `citro3d` since it is required for `citro2d`.
     pub fn new() -> Result<Self> {
         let citro3d_instance = citro3d::Instance::new().expect("failed to initialize Citro3D");
-        let citro2d = Self::with_max_objects(
-            C2D_DEFAULT_MAX_OBJECTS.try_into().unwrap(),
-            citro3d_instance,
-        );
-
-        citro2d
+        Self::with_max_objects(C2D_DEFAULT_MAX_OBJECTS as usize, citro3d_instance)
     }
 
     /// You have to initialize citro3d before using citro2d, but some cases you may
-    /// Have initialized citro3d already, so you can use this function to initialize
+    /// have initialized citro3d already, so you can use this function to initialize.
     /// You pass in the citro3d instance you already initialized to ensure it's lifetime is the same as citro2d
     /// **Note** The above statement may not work, and may not be able to switch between the two without api changes
     /// but currently working on that assumption and to allow for flexibility for the developer
     pub fn new_without_c3d_init(citro3d_instance: citro3d::Instance) -> Result<Self> {
-        Self::with_max_objects(
-            C2D_DEFAULT_MAX_OBJECTS.try_into().unwrap(),
-            citro3d_instance,
-        )
+        Self::with_max_objects(C2D_DEFAULT_MAX_OBJECTS as usize, citro3d_instance)
     }
 
     /// Create a new instance of `citro2d` with a custom maximum number of objects.
@@ -69,16 +67,16 @@ impl Instance {
         max_objects: usize,
         citro3d_instance: citro3d::Instance,
     ) -> Result<Self> {
-        let new_citro_2d = match unsafe { citro2d_sys::C2D_Init(max_objects) } {
-            true => Ok(Self {
-                citro3d_instance: citro3d_instance,
-            }),
+        let new_citro_2d = match unsafe { C2D_Init(max_objects) } {
+            true => Ok(Self { citro3d_instance }),
             false => Err(Error::FailedToInitialize),
         };
-        unsafe { citro2d_sys::C2D_Prepare() };
+        unsafe { C2D_Prepare() };
         new_citro_2d
     }
 
+    /// Create a new render target for a screen.
+    #[doc(alias = "C2D_CreateScreenTarget")]
     pub fn create_screen_target<'screen>(
         &self,
         screen: RefMut<'screen, dyn Screen>,
@@ -86,48 +84,55 @@ impl Instance {
         unsafe {
             self.citro3d_instance
                 .create_screen_target_from_raw(
-                    citro2d_sys::C2D_CreateScreenTarget(screen.as_raw(), screen.side().into()),
+                    C2D_CreateScreenTarget(screen.as_raw(), screen.side().into()),
                     screen,
                 )
                 .map_err(|_| Error::FailedToInitialize)
         }
     }
 
-    /// Render 2D graphics to a selected [`ScreenTarget`].
+    /// Render 2D graphics.
+    ///
+    /// # Example
+    ///
+    /// ```rs
+    /// instance.render_frame_with(|mut frame| {
+    ///     target.clear_with_color(Color::new(0xfb, 0xdb, 0x65));
+    ///     frame.select_render_target(&target).unwrap();
+    ///
+    ///     frame
+    /// });
     #[doc(alias = "C3D_FrameBegin")]
     #[doc(alias = "C2D_SceneBegin")]
+    #[doc(alias = "C2D_Flush")]
     #[doc(alias = "C3D_FrameEnd")]
-    pub fn render_to_target<'screen, 'screen2, F, T>(
-        &mut self,
-        screen_target: ScreenTarget<'screen>,
-        f: F,
-    ) -> citro3d::Result<(ScreenTarget<'screen2>, T)>
-    where
-        F: FnOnce(
-            &mut citro3d::RenderInstance,
-            RenderTarget<'screen>,
-        ) -> (RenderTarget<'screen2>, T),
-    {
-        self.citro3d_instance
-            .render_to_target(screen_target, |render_instance, render_target| {
-                unsafe {
-                    citro2d_sys::C2D_SceneBegin(render_target.as_raw());
-                }
-                f(render_instance, render_target)
-            })
+    pub fn render_frame_with<'instance: 'frame, 'frame>(
+        &'instance mut self,
+        f: impl FnOnce(crate::render::Frame<'frame>) -> crate::render::Frame<'frame>,
+    ) -> citro3d::Result<()> {
+        self.citro3d_instance.render_frame_with(|frame| {
+            let frame = crate::render::Frame::new(frame);
+            let mut ret = f(frame);
+            ret.flush();
+            ret.consume()
+        });
+        Ok(())
     }
 
     /// Returns some stats about the 3Ds's graphics
-    /// TODO this may be more appropriate in citro3d
+    // TODO this may be more appropriate in citro3d
+    #[doc(alias = "C3D_GetProcessingTime")]
+    #[doc(alias = "C3D_GetDrawingTime")]
+    #[doc(alias = "C3D_GetCmdBufUsage")]
     pub fn get_3d_stats(&self) -> Citro3DStats {
         //TODO should i check for NaN?
-        let processing_time_f32 = unsafe { citro3d_sys::C3D_GetProcessingTime() };
-        let drawing_time_f32 = unsafe { citro3d_sys::C3D_GetDrawingTime() };
-        let cmd_buf_usage_f32 = unsafe { citro3d_sys::C3D_GetCmdBufUsage() };
+        let processing_time = unsafe { C3D_GetProcessingTime() };
+        let drawing_time = unsafe { C3D_GetDrawingTime() };
+        let cmd_buf_usage = unsafe { C3D_GetCmdBufUsage() };
         Citro3DStats {
-            processing_time: processing_time_f32,
-            drawing_time: drawing_time_f32,
-            cmd_buf_usage: cmd_buf_usage_f32,
+            processing_time,
+            drawing_time,
+            cmd_buf_usage,
         }
     }
 }
@@ -138,53 +143,4 @@ pub struct Citro3DStats {
     pub processing_time: f32,
     pub drawing_time: f32,
     pub cmd_buf_usage: f32,
-}
-
-/// A 2D point in space.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Point {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
-impl Point {
-    pub const fn new(x: f32, y: f32, z: f32) -> Self {
-        Self { x, y, z }
-    }
-
-    pub const fn new_no_z(x: f32, y: f32) -> Self {
-        Self { x, y, z: 0.0 }
-    }
-}
-
-impl From<(f32, f32, f32)> for Point {
-    fn from((x, y, z): (f32, f32, f32)) -> Self {
-        Self { x, y, z }
-    }
-}
-
-impl From<(f32, f32)> for Point {
-    fn from((x, y): (f32, f32)) -> Self {
-        Self { x, y, z: 0.0 }
-    }
-}
-
-/// Size of a 2D object.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Size {
-    pub width: f32,
-    pub height: f32,
-}
-
-impl Size {
-    pub const fn new(width: f32, height: f32) -> Self {
-        Self { width, height }
-    }
-}
-
-impl From<(f32, f32)> for Size {
-    fn from((width, height): (f32, f32)) -> Self {
-        Self { width, height }
-    }
 }

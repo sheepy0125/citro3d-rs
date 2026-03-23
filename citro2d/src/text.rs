@@ -10,20 +10,15 @@ use citro2d_sys::{
     C2D_TextBuf, C2D_TextBuf_s, C2D_TextBufClear, C2D_TextBufDelete, C2D_TextBufGetNumGlyphs,
     C2D_TextBufNew, C2D_TextBufResize,
 };
-use citro3d::render::RenderTarget;
 
-use crate::{
-    Point, Size,
-    drawable::{Drawable, DrawableResult},
-    font::Font,
-    render::Color,
-};
+use crate::{Color, Point, Size, font::Font, render::Blit};
 
-/// A citro2d text glyph buffer, for use with [`Text`]. Stores the glyphs for a
-/// string and their positioning.
+/// A citro2d text glyph buffer, for use with [`Text`]. Stores references to a
+/// font's glyphs for a string.
 #[derive(Debug)]
-pub struct TextGlyphBuffer {
+pub struct TextGlyphBuffer<'a> {
     inner: NonNull<C2D_TextBuf_s>,
+    pub font: &'a Font,
     /// The capacity of the buffer in glyphs.
     ///
     /// citro2d doesn't expose any fields of [`C2D_TextBuf`], so we need to store
@@ -31,7 +26,7 @@ pub struct TextGlyphBuffer {
     capacity: usize,
 }
 
-impl Drop for TextGlyphBuffer {
+impl Drop for TextGlyphBuffer<'_> {
     /// Dropping a `TextGlyphBuffer` will free the underlying data using
     /// [`C2D_TextBufDelete`] .
     #[doc(alias = "C2D_TextBufDelete")]
@@ -44,10 +39,10 @@ impl Drop for TextGlyphBuffer {
 ///
 /// A text object uses this buffer to store character glyphs and positioning.
 /// Use [`Text::parse`] to "render" to this buffer.
-impl TextGlyphBuffer {
+impl<'a> TextGlyphBuffer<'a> {
     /// Creates a new citro2d text buffer.
     #[doc(alias = "C2D_TextBufNew")]
-    pub fn new(max_glyphs: usize) -> io::Result<Self> {
+    pub fn new(max_glyphs: usize, font: &'a Font) -> io::Result<Self> {
         let inner = NonNull::new(unsafe { C2D_TextBufNew(max_glyphs) }).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::OutOfMemory,
@@ -57,6 +52,7 @@ impl TextGlyphBuffer {
 
         Ok(Self {
             inner,
+            font,
             capacity: max_glyphs,
         })
     }
@@ -129,17 +125,16 @@ impl TextGlyphBuffer {
 }
 
 /// A citro2d text object.
-#[derive(Debug)]
-pub struct Text {
+pub struct Text<'a> {
     inner: C2D_Text,
-    buf: TextGlyphBuffer,
+    pub(crate) buf: TextGlyphBuffer<'a>,
     pub position: Point,
     pub style: TextDrawStyle,
 }
 
-impl Text {
-    pub fn new(point: Point, style: TextDrawStyle) -> io::Result<Self> {
-        let buf = TextGlyphBuffer::new(0)?;
+impl<'a> Text<'a> {
+    pub fn new(point: Point, style: TextDrawStyle, font: &'a Font) -> io::Result<Self> {
+        let buf = TextGlyphBuffer::new(0, font)?;
 
         // SAFETY: C2D_Text is OK to initialize with zeroed fields for all but `buf`.
         let mut inner = unsafe { mem::zeroed::<C2D_Text>() };
@@ -153,20 +148,32 @@ impl Text {
         })
     }
 
+    pub fn set_font(&mut self, font: &'a Font) -> io::Result<()> {
+        println!("setting font to {font:?}");
+        self.buf = TextGlyphBuffer::new(self.buf.capacity(), font)?;
+        Ok(())
+    }
+
     /// Parses text into the glyph buffer.
     ///
     /// Call this before rendering the text.
     #[doc(alias = "C2D_TextParse")]
     #[doc(alias = "C2D_TextFontParse")]
-    pub fn parse(&mut self, text: &str, font: &Font) -> io::Result<()> {
+    pub fn parse(&mut self, text: &str) -> io::Result<()> {
         let Self { inner, buf, .. } = self;
 
         buf.extend_to_text(text)?;
         let c_str = CString::new(text)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "NUL in string"))?;
+        buf.clear();
 
         unsafe {
-            citro2d_sys::C2D_TextFontParse(inner, font.get_inner(), buf.get_inner(), c_str.as_ptr())
+            citro2d_sys::C2D_TextFontParse(
+                inner,
+                buf.font.get_inner(),
+                buf.get_inner(),
+                c_str.as_ptr(),
+            )
         };
         unsafe { citro2d_sys::C2D_TextOptimize(inner) };
 
@@ -191,7 +198,7 @@ impl Text {
     /// not account for word wrap.
     ///
     /// Returns the top left point and the size.
-    pub fn estimate_bounding_box(&self, font: &Font) -> (Point, Size) {
+    pub fn estimate_bounding_box(&self) -> (Point, Size) {
         let Size {
             width: w,
             height: h,
@@ -209,7 +216,7 @@ impl Text {
             VerticalAlignment::Top => y,
             VerticalAlignment::Center => y - h / 2.,
             VerticalAlignment::Baseline => unsafe {
-                let finf = *C2D_FontGetInfo(font.get_inner());
+                let finf = *C2D_FontGetInfo(self.buf.font.get_inner());
                 let tglp = *finf.tglp;
                 // Baseline pos is measured from the top of the text.
                 let baseline_pos = tglp.baselinePos;
@@ -222,22 +229,22 @@ impl Text {
     }
 
     /// Consumes the text into its underlying buffer.
-    pub fn into_buffer(self) -> TextGlyphBuffer {
+    pub fn into_buffer(self) -> TextGlyphBuffer<'a> {
         self.buf
     }
 }
 
-impl Drawable for Text {
+impl Blit for Text<'_> {
+    type Err = ();
     /// Draws a Text object to a render target given its style (`self.style`) and
     /// its underlying glyph buffer.
     ///
     /// See [`Self::parse`] for rendering a string with a font to the glyph buffer.
     ///
-    /// Since [`C2D_DrawText`] has no result, this function always returns
-    /// [`DrawableResult::Success`].
+    /// Since [`C2D_DrawText`] has no result, this function always returns `Ok(())`
     #[doc(alias = "C2D_DrawText")]
-    fn render(&self, _target: &mut RenderTarget<'_>) -> DrawableResult {
-        let Point { x, mut y, z, .. } = self.position;
+    fn blit(&mut self) -> Result<(), Self::Err> {
+        let Point { x, mut y, z } = self.position;
 
         // Vertical alignments center and bottom are not handled by citro2d.
         let Size { height, .. } = self.get_dimensions();
@@ -276,7 +283,7 @@ impl Drawable for Text {
             };
         }
 
-        DrawableResult::Success
+        Ok(())
     }
 }
 
@@ -289,10 +296,13 @@ pub enum HorizontalAlignment {
     /// The point's X coordinate is the left-most edge.
     #[default]
     Left = citro2d_sys::C2D_AlignLeft,
+
     /// The point's X coordinate is the right-most edge.
     Right = citro2d_sys::C2D_AlignRight,
+
     /// The point's X coordinate is the center of the text.
     Center = citro2d_sys::C2D_AlignCenter,
+
     /// The point's X coordinate is the left-most edge.
     /// To be used in conjunction with a word wrap. Otherwise, this is [`Self::Left`].
     Justified = citro2d_sys::C2D_AlignJustified,
@@ -303,11 +313,14 @@ pub enum HorizontalAlignment {
 pub enum VerticalAlignment {
     /// The point's Y coordinate is the baseline of the font.
     Baseline,
+
     /// The point's Y coordinate is the top-most edge.
     #[default]
     Top,
+
     /// The point's Y coordinate is the center.
     Center,
+
     /// The point's Y coordinate is the bottom-most edge. This differs from the
     /// baseline of the font. For example, rendering a ',' will go under the
     /// baseline of the font but is at or above the bottom-most edge of the text.
@@ -318,11 +331,13 @@ pub enum VerticalAlignment {
 pub struct TextDrawStyle {
     pub horiz_align: HorizontalAlignment,
     pub vert_align: VerticalAlignment,
+    pub color: Color,
+
     /// X, Y scalars from the original font bitmap size.
     pub scale: (f32, f32),
+
     /// Enables word wrap at spaces with a given maximum width for wrapping.
     pub word_wrap: Option<f32>,
-    pub color: Color,
 }
 
 impl Default for TextDrawStyle {

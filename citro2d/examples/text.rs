@@ -37,13 +37,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_horizontal_alignment(HorizontalAlignment::Center)
             .with_vertical_alignment(citro2d::text::VerticalAlignment::Baseline),
     )?;
-    hello_text.parse("hello, Citro2D!", &system_font)?;
+    // hello_text.parse("hello, Citro2D!", &system_font)?;
 
     let mut custom_font_text = Text::new(
         (32., 64.).into(),
-        TextDrawStyle::default().with_word_wrap(Some(400. - (32. * 2.))),
+        TextDrawStyle::default()
+            .with_word_wrap(Some(20.))
+            .with_color(Color::new(255, 0, 0)),
     )?;
-    custom_font_text.parse("The quick brown fox jumps over the lazy dog.", &custom_font)?;
+    custom_font_text.parse("1234 1234", &custom_font)?;
+    println!(
+        "C2D_TextBufGetNumGlyphs(): {}",
+        custom_font_text.get_buffer().get_num_glyphs()
+    );
 
     let mut scalar_delta = 0.025;
 
