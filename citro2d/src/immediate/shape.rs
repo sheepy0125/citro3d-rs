@@ -5,7 +5,12 @@ use crate::{Color, GradientColor, Point, Size};
 /* Circle */
 
 /// Draws a circle with a gradient color.
-pub fn draw_circle_gradient(center: Point, radius: f32, gradient_clr: GradientColor) -> bool {
+pub fn draw_circle_gradient(
+    center: impl Into<Point>,
+    radius: f32,
+    gradient_clr: GradientColor,
+) -> bool {
+    let center = center.into();
     unsafe {
         citro2d_sys::C2D_DrawCircle(
             center.x,
@@ -22,10 +27,10 @@ pub fn draw_circle_gradient(center: Point, radius: f32, gradient_clr: GradientCo
 
 /// Draws a circle with a gradient color and a border.
 pub fn draw_circle_gradient_border(
-    center: Point,
+    center: impl Into<Point> + Copy,
     radius: f32,
     gradient_clr: GradientColor,
-    border_clr: Color,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
     draw_circle_solid(center, radius + border_thickness, border_clr)
@@ -36,7 +41,9 @@ pub fn draw_circle_gradient_border(
 ///
 /// FIXME: This has weird side effects: no rectangles will be drawn afterward and sprites will appear black.
 #[inline(always)]
-pub fn draw_circle_solid(center: Point, radius: f32, clr: Color) -> bool {
+pub fn draw_circle_solid(center: impl Into<Point>, radius: f32, clr: impl Into<Color>) -> bool {
+    let center = center.into();
+    let clr = clr.into();
     unsafe { citro2d_sys::C2D_DrawCircleSolid(center.x, center.y, center.z, radius, clr.inner) }
 }
 
@@ -44,10 +51,10 @@ pub fn draw_circle_solid(center: Point, radius: f32, clr: Color) -> bool {
 ///
 /// FIXME: This has weird side effects: no rectangles will be drawn afterward and sprites will appear black.
 pub fn draw_circle_solid_border(
-    center: Point,
+    center: impl Into<Point> + Copy,
     radius: f32,
-    fill_clr: Color,
-    border_clr: Color,
+    fill_clr: impl Into<Color>,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
     draw_circle_solid(center, radius + border_thickness, border_clr)
@@ -60,7 +67,13 @@ pub fn draw_circle_solid_border(
 ///
 /// FIXME: This has weird side effects: no rectangles will be drawn afterward and sprites will appear black.
 #[inline(always)]
-pub fn draw_ellipse_gradient(top_left: Point, size: Size, gradient_clr: GradientColor) -> bool {
+pub fn draw_ellipse_gradient(
+    top_left: impl Into<Point>,
+    size: impl Into<Size>,
+    gradient_clr: GradientColor,
+) -> bool {
+    let top_left = top_left.into();
+    let size = size.into();
     unsafe {
         citro2d_sys::C2D_DrawEllipse(
             top_left.x,
@@ -80,15 +93,17 @@ pub fn draw_ellipse_gradient(top_left: Point, size: Size, gradient_clr: Gradient
 ///
 /// FIXME: This has weird side effects: no rectangles will be drawn afterward and sprites will appear black.
 pub fn draw_ellipse_gradient_border(
-    top_left: Point,
-    size: Size,
+    top_left: impl Into<Point> + Copy,
+    size: impl Into<Size> + Copy,
     gradient_clr: GradientColor,
-    border_clr: Color,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
+    let top_left = top_left.into();
+    let size = size.into();
     draw_ellipse_solid(
-        tuple_add(top_left.into(), -border_thickness).into(),
-        tuple_add(size.into(), border_thickness + border_thickness).into(),
+        tuple_add(top_left.into(), -border_thickness),
+        tuple_add(size.into(), border_thickness + border_thickness),
         border_clr,
     ) && draw_ellipse_gradient(top_left, size, gradient_clr)
 }
@@ -97,7 +112,15 @@ pub fn draw_ellipse_gradient_border(
 ///
 /// FIXME: This has weird side effects: no rectangles will be drawn afterward and sprites will appear black.
 #[inline(always)]
-pub fn draw_ellipse_solid(center: Point, size: Size, clr: Color) -> bool {
+pub fn draw_ellipse_solid(
+    center: impl Into<Point>,
+    size: impl Into<Size>,
+    clr: impl Into<Color>,
+) -> bool {
+    let center = center.into();
+    let size = size.into();
+    let clr = clr.into();
+
     unsafe {
         citro2d_sys::C2D_DrawEllipseSolid(
             center.x,
@@ -114,15 +137,16 @@ pub fn draw_ellipse_solid(center: Point, size: Size, clr: Color) -> bool {
 ///
 /// FIXME: This has weird side effects: no rectangles will be drawn afterward and sprites will appear black.
 pub fn draw_ellipse_solid_border(
-    center: Point,
-    size: Size,
-    fill_clr: Color,
-    border_clr: Color,
+    center: impl Into<Point> + Copy,
+    size: impl Into<Size> + Copy,
+    fill_clr: impl Into<Color>,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
+    let size = size.into();
     draw_ellipse_solid(
         center,
-        tuple_add(size.into(), border_thickness + border_thickness).into(),
+        tuple_add(size.into(), border_thickness + border_thickness),
         border_clr,
     ) && draw_ellipse_solid(center, size, fill_clr)
 }
@@ -132,13 +156,15 @@ pub fn draw_ellipse_solid_border(
 /// Draws a triangle defined by three vertices with a gradient color spanning from each vertex.
 #[inline(always)]
 pub fn draw_triangle_gradient(
-    vtx0: Point,
-    vtx1: Point,
-    vtx2: Point,
-    clr0: Color,
-    clr1: Color,
-    clr2: Color,
+    vtx0: impl Into<Point>,
+    vtx1: impl Into<Point>,
+    vtx2: impl Into<Point>,
+    clr0: impl Into<Color>,
+    clr1: impl Into<Color>,
+    clr2: impl Into<Color>,
 ) -> bool {
+    let (vtx0, vtx1, vtx2) = (vtx0.into(), vtx1.into(), vtx2.into());
+    let (clr0, clr1, clr2) = (clr0.into(), clr1.into(), clr2.into());
     unsafe {
         citro2d_sys::C2D_DrawTriangle(
             vtx0.x, vtx0.y, clr0.inner, vtx1.x, vtx1.y, clr1.inner, vtx2.x, vtx2.y, clr2.inner,
@@ -151,16 +177,17 @@ pub fn draw_triangle_gradient(
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_triangle_gradient_border(
-    vtx0: Point,
-    vtx1: Point,
-    vtx2: Point,
-    clr0: Color,
-    clr1: Color,
-    clr2: Color,
-    border_clr: Color,
+    vtx0: impl Into<Point> + Copy,
+    vtx1: impl Into<Point> + Copy,
+    vtx2: impl Into<Point> + Copy,
+    clr0: impl Into<Color>,
+    clr1: impl Into<Color>,
+    clr2: impl Into<Color>,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
-    let (b_vtx0, b_vtx1, b_vtx2) = scale_triangle(vtx0, vtx1, vtx2, border_thickness);
+    let (b_vtx0, b_vtx1, b_vtx2) =
+        scale_triangle(vtx0.into(), vtx1.into(), vtx2.into(), border_thickness);
     draw_triangle_solid(b_vtx0, b_vtx1, b_vtx2, border_clr)
         && draw_triangle_gradient(vtx0, vtx1, vtx2, clr0, clr1, clr2)
 }
@@ -168,7 +195,14 @@ pub fn draw_triangle_gradient_border(
 // N.B. there is no libcitro2d function for a solid triangle.
 /// Draws a triangle defined by three vertices with a solid color.
 #[inline(always)]
-pub fn draw_triangle_solid(vtx0: Point, vtx1: Point, vtx2: Point, clr: Color) -> bool {
+pub fn draw_triangle_solid(
+    vtx0: impl Into<Point>,
+    vtx1: impl Into<Point>,
+    vtx2: impl Into<Point>,
+    clr: impl Into<Color>,
+) -> bool {
+    let (vtx0, vtx1, vtx2) = (vtx0.into(), vtx1.into(), vtx2.into());
+    let clr = clr.into();
     unsafe {
         citro2d_sys::C2D_DrawTriangle(
             vtx0.x, vtx0.y, clr.inner, vtx1.x, vtx1.y, clr.inner, vtx2.x, vtx2.y, clr.inner, vtx0.z,
@@ -179,14 +213,15 @@ pub fn draw_triangle_solid(vtx0: Point, vtx1: Point, vtx2: Point, clr: Color) ->
 /// Draws a triangle with a solid color and border.
 #[inline(always)]
 pub fn draw_triangle_solid_border(
-    vtx0: Point,
-    vtx1: Point,
-    vtx2: Point,
-    fill_clr: Color,
-    border_clr: Color,
+    vtx0: impl Into<Point> + Copy,
+    vtx1: impl Into<Point> + Copy,
+    vtx2: impl Into<Point> + Copy,
+    fill_clr: impl Into<Color>,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
-    let (b_vtx0, b_vtx1, b_vtx2) = scale_triangle(vtx0, vtx1, vtx2, border_thickness);
+    let (b_vtx0, b_vtx1, b_vtx2) =
+        scale_triangle(vtx0.into(), vtx1.into(), vtx2.into(), border_thickness);
     draw_triangle_solid(b_vtx0, b_vtx1, b_vtx2, border_clr)
         && draw_triangle_solid(vtx0, vtx1, vtx2, fill_clr)
 }
@@ -194,7 +229,13 @@ pub fn draw_triangle_solid_border(
 /* Rectangle */
 
 /// Draws a rectangle with a gradient color.
-pub fn draw_rect_gradient(top_left: Point, size: Size, gradient_clr: GradientColor) -> bool {
+pub fn draw_rect_gradient(
+    top_left: impl Into<Point>,
+    size: impl Into<Size>,
+    gradient_clr: GradientColor,
+) -> bool {
+    let top_left = top_left.into();
+    let size = size.into();
     unsafe {
         citro2d_sys::C2D_DrawRectangle(
             top_left.x,
@@ -212,22 +253,31 @@ pub fn draw_rect_gradient(top_left: Point, size: Size, gradient_clr: GradientCol
 
 /// Draws a rectangle with a gradient color and a border.
 pub fn draw_rect_gradient_border(
-    top_left: Point,
-    size: Size,
+    top_left: impl Into<Point> + Copy,
+    size: impl Into<Size>,
     fill_clr: GradientColor,
     border_clr: Color,
     border_thickness: f32,
 ) -> bool {
+    let top_left = top_left.into();
+    let size = size.into();
     draw_rect_solid(
-        tuple_add(top_left.into(), -border_thickness).into(),
-        tuple_add(size.into(), border_thickness + border_thickness).into(),
+        tuple_add(top_left.into(), -border_thickness),
+        tuple_add(size.into(), border_thickness + border_thickness),
         border_clr,
     ) && draw_rect_gradient(top_left, size, fill_clr)
 }
 
 /// Draws a rectangle with a solid color.
 #[inline(always)]
-pub fn draw_rect_solid(top_left: Point, size: Size, clr: Color) -> bool {
+pub fn draw_rect_solid(
+    top_left: impl Into<Point>,
+    size: impl Into<Size>,
+    clr: impl Into<Color>,
+) -> bool {
+    let top_left = top_left.into();
+    let size = size.into();
+    let clr = clr.into();
     unsafe {
         citro2d_sys::C2D_DrawRectSolid(
             top_left.x,
@@ -242,15 +292,17 @@ pub fn draw_rect_solid(top_left: Point, size: Size, clr: Color) -> bool {
 
 /// Draws a rectangle with a solid color and a border.
 pub fn draw_rect_solid_border(
-    top_left: Point,
-    size: Size,
-    fill_clr: Color,
-    border_clr: Color,
+    top_left: impl Into<Point>,
+    size: impl Into<Size>,
+    fill_clr: impl Into<Color>,
+    border_clr: impl Into<Color>,
     border_thickness: f32,
 ) -> bool {
+    let top_left = top_left.into();
+    let size = size.into();
     draw_rect_solid(
-        tuple_add(top_left.into(), -border_thickness).into(),
-        tuple_add(size.into(), border_thickness + border_thickness).into(),
+        tuple_add(top_left.into(), -border_thickness),
+        tuple_add(size.into(), border_thickness + border_thickness),
         border_clr,
     ) && draw_rect_solid(top_left, size, fill_clr)
 }

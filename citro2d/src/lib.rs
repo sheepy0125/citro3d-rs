@@ -32,7 +32,7 @@ use citro2d_sys::{C2D_CreateScreenTarget, C2D_DEFAULT_MAX_OBJECTS, C2D_Init, C2D
 use citro3d::render::ScreenTarget;
 use citro3d_sys::{C3D_GetCmdBufUsage, C3D_GetDrawingTime, C3D_GetProcessingTime};
 use ctru::services::gfx::Screen;
-use error::{Error, Result};
+pub use error::{Error, Result};
 pub use types::*;
 
 /// The single instance for using `citro2d`. This is the base type that an application
@@ -109,7 +109,7 @@ impl Instance {
     pub fn render_frame_with<'instance: 'frame, 'frame>(
         &'instance mut self,
         f: impl FnOnce(crate::render::Frame<'frame>) -> crate::render::Frame<'frame>,
-    ) -> citro3d::Result<()> {
+    ) -> Result<()> {
         self.citro3d_instance.render_frame_with(|frame| {
             let frame = crate::render::Frame::new(frame);
             let mut ret = f(frame);
@@ -117,6 +117,20 @@ impl Instance {
             ret.consume()
         });
         Ok(())
+    }
+
+    pub fn try_render_frame_with<'instance: 'frame, 'frame, E>(
+        &'instance mut self,
+        f: impl FnOnce(&mut crate::render::Frame<'frame>) -> std::result::Result<(), E>,
+    ) -> Result<std::result::Result<(), E>> {
+        let mut ret = Ok(());
+        self.citro3d_instance.render_frame_with(|frame| {
+            let mut frame = crate::render::Frame::new(frame);
+            ret = f(&mut frame);
+            frame.flush();
+            frame.consume()
+        });
+        Ok(ret)
     }
 
     /// Returns some stats about the 3Ds's graphics

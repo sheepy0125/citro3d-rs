@@ -133,7 +133,9 @@ pub struct Text<'a> {
 }
 
 impl<'a> Text<'a> {
-    pub fn new(point: Point, style: TextDrawStyle, font: &'a Font) -> io::Result<Self> {
+    pub fn new(point: impl Into<Point>, style: TextDrawStyle, font: &'a Font) -> io::Result<Self> {
+        let position = point.into();
+
         let buf = TextGlyphBuffer::new(0, font)?;
 
         // SAFETY: C2D_Text is OK to initialize with zeroed fields for all but `buf`.
@@ -143,7 +145,7 @@ impl<'a> Text<'a> {
         Ok(Self {
             inner,
             buf,
-            position: point,
+            position,
             style,
         })
     }

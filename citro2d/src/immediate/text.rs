@@ -3,6 +3,7 @@
 use std::{cell::LazyCell, sync::Mutex};
 
 use crate::{
+    Point,
     font::Font,
     render::Blit as _,
     text::{Text, TextDrawStyle},
@@ -14,12 +15,14 @@ thread_local! {
     #[allow(static_mut_refs)]
     static IMMEDIATE_TEXT: LazyCell<Mutex<Text<'static>>> =
         LazyCell::new(|| Mutex::new({
-            Text::new((0., 0.).into(), TextDrawStyle::default(), unsafe { &SHARED_FONT }).unwrap()
+            Text::new((0., 0.), TextDrawStyle::default(), unsafe { &SHARED_FONT }).unwrap()
         }));
 }
 
 /// Draws text with the default system font according to the system's region.
-pub fn draw_text(text: &str, at: crate::Point, style: TextDrawStyle) {
+pub fn draw_text(text: &str, at: impl Into<Point>, style: TextDrawStyle) {
+    let at = at.into();
+
     IMMEDIATE_TEXT.with(|mutex| {
         let mut shared_text = mutex.lock().unwrap();
 
@@ -33,7 +36,9 @@ pub fn draw_text(text: &str, at: crate::Point, style: TextDrawStyle) {
 }
 
 /// Draws text with a font.
-pub fn draw_text_font(text: &str, at: crate::Point, style: TextDrawStyle, font: &Font) {
+pub fn draw_text_font(text: &str, at: impl Into<Point>, style: TextDrawStyle, font: &Font) {
+    let at = at.into();
+
     let mut temp_text = Text::new(at, style, font).unwrap();
     temp_text.parse(text).unwrap();
     temp_text.blit().unwrap();

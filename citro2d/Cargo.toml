@@ -13,6 +13,7 @@ citro3d = { version = "0.1.0", path = "../citro3d" }
 citro3d-sys = { version = "0.1.0", path = "../citro3d-sys" }
 swizzle_3ds = "0.2.0"
 image = "0.24.9"
+libc = "0.2.175"
 
 [dev-dependencies]
 test-runner = { git = "https://github.com/rust3ds/ctru-rs.git" }

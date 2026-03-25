@@ -41,6 +41,7 @@ impl<'instance> Frame<'instance> {
         &mut self,
         target: &'instance T,
     ) -> Result<()> {
+        self.flush();
         self.0
             .select_render_target(target)
             .map_err(|_| Error::InvalidRenderTarget)?;
@@ -137,8 +138,8 @@ impl<'instance> Frame<'instance> {
 pub trait TargetExt: Target {
     /// Clear the target to a [`Color`].
     #[doc(alias = "C2D_TargetClear")]
-    fn clear_with_color(&self, color: Color) {
-        unsafe { C2D_TargetClear(self.as_raw(), color.inner) };
+    fn clear_with_color(&self, color: impl Into<Color>) {
+        unsafe { C2D_TargetClear(self.as_raw(), color.into().inner) };
     }
 }
 

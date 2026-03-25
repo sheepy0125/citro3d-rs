@@ -26,6 +26,26 @@ pub trait Image {
 
     /// Get the inner texture.
     fn get_texture(&self) -> &Texture;
+
+    /// Get the inner subtexture.
+    fn get_subtexture(&self) -> &Tex3DS_SubTexture;
+
+    fn get_subtexture_mut(&mut self) -> &mut Tex3DS_SubTexture;
+
+    /// Set the crop of the image's subtexture.
+    fn set_crop(&mut self, size: impl Into<Size>) {
+        let Size { width, height } = size.into();
+
+        let tex = self.get_texture();
+        let (tex_width, tex_height) = (tex.width(), tex.height());
+
+        let subtex = self.get_subtexture_mut();
+
+        subtex.width = width as u16;
+        subtex.height = height as u16;
+        subtex.right = (width / (tex_width as f32)).clamp(0.0, 1.0);
+        subtex.bottom = 1.0 - (height / (tex_height as f32)).clamp(0.0, 1.0);
+    }
 }
 
 /// A citro2d image that holds onto its own [`Texture`].
@@ -35,14 +55,17 @@ pub struct ImageOwned {
     inner: C2D_Image,
     // Referenced in `self.inner`.
     texture: Pin<Box<Texture>>,
-    // Referenced in `self.inner`. Constant.
+    // Referenced in `self.inner`.
     subtex: Pin<Box<Tex3DS_SubTexture>>,
     pub position: Point,
     pub scale: (f32, f32),
 }
 
 impl ImageOwned {
-    pub fn new(position: Point, size: Size) -> Result<Self> {
+    pub fn new(position: impl Into<Point>, size: impl Into<Size>) -> Result<Self> {
+        let position = position.into();
+        let size = size.into();
+
         let width = size.width as u16;
         let height = size.height as u16;
 
@@ -52,13 +75,12 @@ impl ImageOwned {
         let squared_height = (height.max(MIN_TEX_SIZE) - 1)
             .next_power_of_two()
             .min(MAX_TEX_SIZE);
-        let squared_size = squared_width.max(squared_height);
 
         let texture = Box::pin(
             Texture::new(TextureParameters::new_2d(
-                squared_size,
-                squared_size,
-                ColorFormat::Rgb8,
+                squared_width,
+                squared_height,
+                ColorFormat::Rgba8,
             ))
             // we check the size between the boundaries ourselves already,
             // so the only error can be...
@@ -151,6 +173,14 @@ impl Image for ImageOwned {
     fn get_texture(&self) -> &Texture {
         &self.texture
     }
+
+    fn get_subtexture(&self) -> &Tex3DS_SubTexture {
+        &self.subtex
+    }
+
+    fn get_subtexture_mut(&mut self) -> &mut Tex3DS_SubTexture {
+        &mut self.subtex
+    }
 }
 
 impl Blit for ImageOwned {
@@ -173,12 +203,15 @@ pub struct ImageRef<'a> {
 
 impl<'a> ImageRef<'a> {
     /// Create a new image with a reference to a texture.
-    pub fn new(position: Point, size: Size, texture: &'a Texture) -> Self {
+    pub fn new(position: impl Into<Point>, size: impl Into<Size>, texture: &'a Texture) -> Self {
+        let size = size.into();
+        let position = position.into();
+
         let tex_width = texture.width();
         let tex_height = texture.height();
 
-        let width = (size.width as u16).min(tex_width);
-        let height = (size.height as u16).min(tex_height);
+        let width = (size.width as u16).max(tex_width);
+        let height = (size.height as u16).max(tex_height);
 
         let subtex = Box::pin(Tex3DS_SubTexture {
             width,
@@ -223,6 +256,14 @@ impl Image for ImageRef<'_> {
 
     fn get_texture(&self) -> &Texture {
         self.texture
+    }
+
+    fn get_subtexture(&self) -> &Tex3DS_SubTexture {
+        &self.subtex
+    }
+
+    fn get_subtexture_mut(&mut self) -> &mut Tex3DS_SubTexture {
+        &mut self.subtex
     }
 }
 

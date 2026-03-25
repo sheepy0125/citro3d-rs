@@ -139,9 +139,11 @@ impl<'a> Sprite<'a> {
     pub fn from_index(
         sheet: &'a SpriteSheet,
         index: usize,
-        center: Point,
+        center: impl Into<Point>,
         scale: (f32, f32),
     ) -> Result<Self> {
+        let center = center.into();
+
         let count = sheet.number_of_sprites();
         if index >= count {
             return Err(Error::IndexOutOfBounds {

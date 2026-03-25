@@ -119,6 +119,18 @@ impl Color {
     }
 }
 
+impl From<(u8, u8, u8)> for Color {
+    fn from((r, g, b): (u8, u8, u8)) -> Self {
+        Self::new(r, g, b)
+    }
+}
+
+impl From<(u8, u8, u8, u8)> for Color {
+    fn from((r, g, b, a): (u8, u8, u8, u8)) -> Self {
+        Self::new_with_alpha(r, g, b, a)
+    }
+}
+
 impl From<u32> for Color {
     fn from(val: u32) -> Self {
         Color { inner: val }
